@@ -1,0 +1,442 @@
+Student Number: 21012050
+
+Pacman Protocol Specification
+=============================
+
+Terminology
+============
+
+Note: The terms FOREIGN, LOCAL, AWAY and REMOTE mean the same as they do in the assignment PDF provided by UCL. 
+
+The pacman protocol runs over UDP, using port number 5432.  The protocol deals with 13 different message types along with an ACK message type. The functions of the messages are described below:
+
+ - The MAZE message describes layout of the LOCAL 28x28 maze, and should be sent between computers at the start of the game and after any restarts. 
+
+ - The PACMAN_UPDATE message continuously sends the current position, direction and speed of a computer's LOCAL or AWAY pacman to the other computer. 
+
+ - The GHOST_UPDATE message continuously sends the current position, direction, speed and mode of the LOCAL ghosts to the other computer. The mode can be CHASE (default), FRIGHTEN (blue-colored and edible) and EYES(immediately after being eaten). 
+
+ - The LOCAL or AWAY's pacman's score is continuously sent to the other computer via the SCORE_UPDATE message. 
+
+ - The LOCAL maze has 6 states defined in the assignment PDF that are sent to the other computer using the STATUS_UPDATE message whenever a change in state occurs.
+
+ - The PACMAN_ARRIVED and PACMAN_LEFT messages are sent to the other computer when a computer's LOCAL pacman becomes AWAY or its AWAY pacman becomes LOCAl respectively.
+ 
+ - The FOREIGN_PACMAN_ATE_GHOST message is sent when a computer's AWAY pacman eats a REMOTE ghost.
+
+ - If a computer's AWAY pacman is killed by a REMOTE ghost, it sends the PACMAN_DIED message. 
+ 
+ - If a level is completed on the REMOTE screen, the other computer sends a PACMAN_GO_HOME message, which prompts a computer's pacman to reset to LOCAL and the sending of a PACMAN_LEFT message to the other computer.  
+
+ - When a computer's LOCAL or AWAY pacman eats food or power-pills, it sends an EAT message to the other computer. 
+
+ - When a computer's LOCAL ghost is eaten by the FOREIGN pacman, it sends the GHOST_WAS_EATEN message to the other computer.
+
+ - Any changes in the pacman's lives are sent to the other computer with the LIVES_UPDATE message.
+
+
+ACK messages and reliability
+============================
+
+Since the protocol uses UDP, there is no built-in reliability scheme in the case of packet loss. To deal with this, an application level acknowledgement and retransmission scheme must be implemented. To prevent excess overhead due to acknowledgements and retransmissions, this scheme will only be implemented for message types that need to be reliable. I've determined that all message types, with the exception of PACMAN_UPDATE, GHOST_UPDATE and SCORE_UPDATE need to be reliable. This is because they are only triggered after certain events and cannot simply be ignored or interpolated from future messages such as is the case with the PACMAN_UPDATE, GHOST_UPDATE and SCORE_UPDATE messages. 
+
+For message types that need to be reliable, the following application level scheme must be implemented. The receiver sends an ACK message upon receipt of the message. The sender waits 200ms for the ACK message and retransmits the message if an ACK message isn't received within that timeframe. If an ACK message isn't received within 10 tries of re-sending the message, the receiver is considered unreachable, and the program prompts the user to check their connection and restart.
+
+Each ACK message is comprised of a cumulative sequence number, keeping track of how many messages have been received without any losses. This is done so that if an ACK message is lost, a later ACK message's cumulative sequence number will cover the missing ACK messages. While this introduces the problem of extraneous retransmits of messages arriving after the lost message, it should be fairly rare and only cause a little bit of delay. 
+
+
+Setting up the connection
+=========================
+
+Since the protocol uses UDP, there is no explicit connection establishment handshake. Thus, when the program is started, each computer sends the other a MAZE message, which doubles as a way to initialize the connection. The MAZE messages are sent using the reliability scheme described in the reliability section. Once a computer receives a MAZE message and an ACK message from the other computer, it waits for 2 seconds (200ms x 10 tries) to account for its ACK message to the other computer being lost and then proceeds to run the game. If the connection is actually unreliable and all ACK messages to one computer are lost along the way, the reliability scheme ensures this is caught by one of the computers within 10 tries, which can then flag the user about connection problems. 
+
+Message Timing
+==============
+
+For messages that should be sent continuously, such as the GHOST_UPDATE, PACMAN_UPDATE and SCORE_UPDATE messages, they are sent once per frame. Other messages that are triggered by certain events are sent using the reliability scheme described previously after they are triggered.
+
+Message encoding
+================
+
+Messages are fixed format, binary encoded, and all integer fields are sent in big endian byte-order. Since each message type will have a fixed number of bytes, no length field is necessary. For decoding pixel coordinates, the origin is assumed to be at the top right corner of the maze, and pixel values range from 0-1023 for the x and y components. 
+
+Sequence Numbers
+================
+
+Before describing the contents of the message types, the idea of a sequence number must be explained. Since the use of UDP may cause messages to be lost or arrive out of order, we need to keep track of the sequence number of the last message received of each type. This is essential for our described acknowledgement and retransmission scheme to function correctly. This is also useful for message types that don't need to be reliable, such as the GHOST_UPDATE, SCORE_UPDATE and PACMAN_UPDATE messages, since it can prevent glitching. If these messages arrive out of order, messages with a lower sequence number than the last message can be ignored, since the program can instead interpolate any missing values from the last known positions, speed and direction. However, this comparison needs to account for wrap-around and so a max bound on the difference between sequence number can be added to ensure messages aren't ignored after their sequence numbers wrap back around to 0.
+
+Message Contents and Formatting
+===============================
+
+MAZE message type
+-----------------
+
+Consists of 396 bytes ≈ 0.4 kB. The maze in the game consists of 28x28 squares, each of which can represent 12 possible values. To store these values, we need 4 bits. Therefore, the number of bytes needed for 28x28 squares and 4 bits for each is 392. Apart from this, we need 4 bits for the message type field, since there are 14 possible message types, and 28 bits for the sequence number, bringing the total to 396 bytes. The squares in the grid are encoded in row order, starting from the left-most square of the first row in the grid and ending at the right-most square of the last row in the grid. At the start or after restarts, the program should parse the maze txt file and convert it to the following binary encoding:
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |Square |Square |Square |Square |Square |Square |Square |Square |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   ...
+   ... 
+   ...
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |Square |Square |Square |Square |Square |Square |Square |Square |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ 
+ - T: 4 bit type field.  Type=MAZE has decimal value 0.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+ 
+ - Square: 4 bit field, representing what square in the grid will display.  
+           Square=Corner 1 has decimal value 0.
+           Square=Corner 2 has decimal value 1.
+           Square=Corner 3 has decimal value 2.
+           Square=Corner 4 has decimal value 3.
+           Square=Horizontal Line has decimal value 4.
+           Square=Vertical Line has decimal value 5.
+           Square=Tunnel A has decimal value 6.
+           Square=Tunnel B has decimal value 7.
+           Square=Empty has decimal value 8.
+           Square=Inaccessible has decimal value 9.
+           Square=Food has decimal value 10.
+           Square=Power-pill has decimal value 11.
+
+PACMAN_UPDATE message type
+--------------------------
+
+Consists of 9 bytes.
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   P   | X pixel position  | Y pixel position  |     Speed     |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+
+   |  Speed(cont)  |
+   +-+-+-+-+-+-+-+-+
+ 
+ - T: 4 bit type field.  Type=PACMAN_UPDATE has decimal value 1.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+ - P: 4 bit padding field. Decimal value of 0, ignored by program. Used to round message to 9 bytes
+ 
+ - X Pixel position: 10 bit unsigned integer. Represents the X pixel position value of the pacman                         
+   in the range of 0-1023.
+ 
+ - Y Pixel position: 10 bit unsigned integer. Represents the Y pixel position value of the pacman                         
+   in the range of 0-1023.
+
+ - Speed: 16 bit half-precision floating point number. Exponent uses 5 bits and mantissa uses 11 bits. Represents the speed of the pacman.
+
+
+GHOST_UPDATE message type
+--------------------------
+
+Consists of 9 bytes. Sent for each ghost individually. Therefore, a field representing ghost number is needed to differentiate between the 4 ghosts.
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   | G | M | X pixel position  | Y pixel position  |     Speed     |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+
+   |  Speed(cont)  |
+   +-+-+-+-+-+-+-+-+
+ 
+ - T: 4 bit type field.  Type=GHOST_UPDATE has decimal value 2.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+ 
+ - G: 2 bit ghost number field. 
+      Ghost number=1 has decimal value 0
+      Ghost number=2 has decimal value 1
+      Ghost number=3 has decimal value 2
+      Ghost number=4 has decimal value 3
+
+ - M: 2 bit mode field.
+      Mode=FRIGHTEN has decimal value 0
+      Mode=CHASE has decimal value 1
+      Mode=EYES has decimal value 2
+ 
+ - X Pixel position: 10 bit unsigned integer. Represents the X pixel position value of the ghost                         
+   in the range of 0-1023.
+ 
+ - Y Pixel position: 10 bit unsigned integer. Represents the Y pixel position value of the ghost                         
+   in the range of 0-1023.
+
+ - Speed: 16 bit half-precision floating point number. Exponent uses 5 bits and mantissa uses 11 bits. Represents the speed of the ghost.
+
+
+SCORE_UPDATE message type
+-------------------------
+
+Consists of 6 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |            Score              |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=SCORE_UPDATE has decimal value 3.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+ - Score: a 16 bit unsigned integer. Represents the current score of the LOCAL or AWAY pacman.
+ 
+
+STATUS_UPDATE message type
+--------------------------
+
+Consists of 5 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+
+   |     Status    |
+   +-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=STATUS_UPDATE has decimal value 4.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+ - Status: an 8 bit field that represents the status of the local game board.
+      Status=STARTUP has decimal value 0
+      Status=CHASE has decimal value 1
+      Status=FRIGHTEN has decimal value 2
+      Status=GAME_OVER has decimal value 3
+      Status=NEXT_LEVEL_WAIT has decimal value 4
+      Status=READY_TO_RESTART has decimal value 5
+
+
+PACMAN_ARRIVED message type
+--------------------------
+
+Consists of 4 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=PACMAN_ARRIVED has decimal value 5.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+
+PACMAN_LEFT message type
+------------------------
+
+Consists of 4 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=PACMAN_LEFT has decimal value 6.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+
+FOREIGN_PACMAN_ATE_GHOST message type
+-------------------------------------
+
+Consists of 5 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+
+   | G |     P     |
+   +-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=FOREIGN_PACMAN_ATE_GHOST has decimal value 7.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+ - G: 2 bit ghost number field. 
+      Ghost number=1 has decimal value 0
+      Ghost number=2 has decimal value 1
+      Ghost number=3 has decimal value 2
+      Ghost number=4 has decimal value 3
+
+ - P: 6 bit padding field. Decimal value of 0. Rounds message up to 5 bytes, ignored by program.
+
+
+PACMAN_DIED message type
+------------------------
+
+Consists of 4 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=PACMAN_DIED has decimal value 8.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+
+PACMAN_GO_HOME message type
+---------------------------
+
+Consists of 4 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=PACMAN_GO_HOME has decimal value 9.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+
+EAT message type
+----------------
+
+Consists of 6 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  X Pos  |  Y Pos  |     P     |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=EAT has decimal value 10.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+ - X Pos: 5 bit unsigned integer field. Represents X-grid position of eaten item in range 1-28
+
+ - Y Pos: 5 bit unsigned integer field. Represents Y-grid position of eaten item in range 1-28
+
+ - P: 6 bit padding field. Decimal value of 0. Rounds message up to 6 bytes, ignored by program
+
+
+GHOST_WAS_EATEN message type
+----------------------------
+
+Consists of 5 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+
+   | G |     P     |
+   +-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=GHOST_WAS_EATEN has decimal value 11.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+
+ - G: 2 bit ghost number field. 
+      Ghost number=1 has decimal value 0
+      Ghost number=2 has decimal value 1
+      Ghost number=3 has decimal value 2
+      Ghost number=4 has decimal value 3
+
+ - P: 6 bit padding field. Decimal value of 0. Rounds message up to 5 bytes, ignored by program.
+
+
+LIVES_UPDATE message type
+--------------------------
+
+Consists of 5 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |                  sequence number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+
+   |     Lives     |
+   +-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=LIVES_UPDATE has decimal value 12.
+
+ - sequence number: a 28 bit unsigned integer, initialized to zero and
+   incremented by one for every new message sent.  If it reaches
+   (2^28)-1, it wraps back round to zero.
+ 
+ - Lives: 8 bit unsigned integer. Represents the number of lives of the pacman.
+
+
+ACK message type
+----------------
+
+Consists of 6 bytes. 
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   T   |              cumulative sequence number               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |cumulative sequence number cont|
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+ - T: 4 bit type field.  Type=ACK has decimal value 13.
+
+ - cumulative sequence number: a 44 bit unsigned integer, initialized to zero and
+   incremented by one for every cumulative message received.  If it reaches
+   (2^44)-1, it wraps back round to zero.
+
+
+
+
